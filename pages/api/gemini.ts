@@ -1,11 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { GoogleGenAI } from '@google/genai';
 
-const apiKey = process.env.GEMINI_AIP_KEY;
+// Accept either GEMINI_AIP_KEY (used earlier) or GEMINI_API_KEY (what you set in Netlify/UI)
+const apiKeyFromAip = process.env.GEMINI_AIP_KEY;
+const apiKeyFromApi = process.env.GEMINI_API_KEY;
+const apiKey = apiKeyFromAip || apiKeyFromApi;
 
 if (!apiKey) {
-  // Note: we don't throw at import time to keep dev server running, but handler will error.
-  console.warn('GEMINI_AIP_KEY is not set. API route will fail without it.');
+  // Keep the log generic — do NOT print the actual key.
+  console.warn('Gemini API key not found in environment. Checked GEMINI_AIP_KEY and GEMINI_API_KEY.');
 }
 
 const ai = new GoogleGenAI({ apiKey: apiKey || '' });
@@ -20,6 +23,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!prompt || typeof prompt !== 'string') {
     return res.status(400).json({ error: 'Missing or invalid prompt' });
+  }
+
+  if (!apiKey) {
+    return res.status(500).json({ error: 'Server not configured with Gemini API key (GEMINI_AIP_KEY or GEMINI_API_KEY).' });
   }
 
   try {
@@ -44,7 +51,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(200).json({ svg });
   } catch (err: any) {
+    // Try to surface a helpful error code/status without leaking secrets.
     console.error('Gemini API Error:', err?.message || err);
-    return res.status(500).json({ error: err?.message || 'Failed to generate SVG' });
+
+    const status = err?.status || err?.statusCode || err?.code || null;
+    const message = err?.message || String(err || 'Unknown error');
+
+    if (status === 401 || /unauthoriz/i.test(message)) {
+      return res.status(401).json({ error: { message: 'Unauthorized to Gemini API', upstream: { code: status, message } } });
+    }
+
+    return res.status(500).json({ error: { message: 'Failed to generate SVG', upstream: { code: status, message } } });
   }
 }
